@@ -20,20 +20,30 @@
 
 자세한 수치는 [summary.md](summary.md) 참고.
 
-## 비교 구성
+## 비교 구성: A vs F_HMAC
 
-| 구성 | 구조 | 인덱스 | 해시 알고리즘 |
-|---|---|---|---|
-| A | user에 AES256 암호문만 | 없음 (전체 스캔 기준선) | — |
-| B | user + map | 없음 | SHA-256 |
-| C | user + map | B-tree | SHA-256 |
-| D | user + map | hash | SHA-256 |
-| E | user (map 없음) | B-tree | SHA-256 |
-| F | user (map 없음) | hash | SHA-256 |
-| C_HMAC / D_HMAC / E_HMAC / F_HMAC | C/D/E/F와 동일 | 동일 | **HMAC-SHA256** |
+| 구성 | 테이블 | 저장하는 값 | 인덱스 | 로그인 시 이메일 찾는 방법 |
+|---|---|---|---|---|
+| **A** | `users_a` | AES-256 암호문 | 없음 (PK만) | 모든 행을 복호화해 입력 이메일과 비교 (전체 스캔) |
+| **F_HMAC** | `users_f_hmac` | AES-256 암호문 + 이메일의 HMAC-SHA256 값 | `email_hash`에 hash 인덱스 | 입력 이메일의 HMAC 값으로 인덱스를 한 번 조회 |
 
-10가지 구성이 전부 별도 테이블로 같은 서버에 동시에 올라간다. 설계 배경과 각 구성이
-왜 이렇게 나뉘는지는 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)에 정리했다.
+### 왜 A와 F_HMAC인가
+
+- **A는 문제 상황 그 자체(기준선)다.** AES-256 암호화는 비결정적이라 같은 이메일도 매번 다른
+  암호문이 된다. 그래서 암호문만 저장하면 DB가 이메일로 행을 찾을 방법이 없고, 모든 행을
+  꺼내 복호화하며 비교할 수밖에 없다. 회원 수에 비례해 느려지는 이 비용이 해결하려는 문제다.
+- **F_HMAC은 최종 권장 구조다.** 이메일의 해시 값을 같은 테이블에 함께 저장(blind index)하고
+  그 열에 인덱스를 건다.
+  - **map 테이블 없이 한 테이블(F 계열):** 조회가 조인 없이 한 번에 끝난다.
+  - **hash 인덱스:** 로그인은 "이메일이 정확히 같은 행" 찾기(등치 조회)뿐이라 범위 조회용
+    B-tree가 필요 없다.
+  - **SHA-256 대신 HMAC-SHA256:** 키 없는 SHA-256은 이메일 목록을 해시해 대조하면 원래
+    이메일이 드러난다. HMAC은 서버만 아는 비밀 키가 있어야 같은 값을 만들 수 있다(계획서 11장 보안 권고).
+- **해결 전(A)과 해결 후(F_HMAC)를 직접 비교**하면 blind index를 도입한 효과가 가장 분명하게
+  드러난다. 중간 단계 구성(B~E, SHA-256 변형)은 측정 시간이 한정돼 있어 이번 측정에서 뺐다.
+
+코드와 스키마에는 계획서 4장의 다른 구성(B~E, C/D/E_HMAC)도 남아 있다. 설계 배경은
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 참고.
 
 ## 요구 사항
 
@@ -69,11 +79,16 @@ java -jar target/ahbench.jar \
 # 6) 해당 규모로 적재 + 인덱스 + ANALYZE
 ./scripts/load-data.sh 100000
 
-# 7) k6 부하 테스트 (예: 로그인 시나리오, 구성 c)
-k6 run --env CONFIG=c k6/s1_login.js
+# 7) 같은 규모 N을 A와 F_HMAC 테이블에 적재 (staging.members_hmac 에서 seq <= N 만 옮김)
+./load.sh a 100000
+./load.sh f_hmac 100000
 
-# 모든 필수 구성(A, C, E)에 대해 반복 실행하고 싶다면
-./k6/run-all.sh s1_login.js a c e
+# 8) 로그인 측정: A와 F_HMAC을 같은 샘플로 차례로 측정 (A 50회, F_HMAC 200회)
+./k6/run-compare.sh 100000 50 200
+
+# 9) 결과 정리: summary.md, results/summary.csv, 그래프
+python3 k6/lib/collect-results.py
+python3 k6/lib/plot-results.py   # matplotlib 필요
 ```
 
 ## 디렉터리 구조
@@ -90,19 +105,29 @@ src/main/java/com/doh/ahbench/
 src/main/resources/db/migration/   Flyway DDL (테이블만; 인덱스는 적재 후 별도)
 sql/indexes.sql                    적재 후 실행하는 인덱스 DDL
 scripts/                           생성 → 적재 → 인덱스 → 크기측정 → EXPLAIN 파이프라인
-k6/                                S1~S5 시나리오
+k6/                                로그인 측정 (login_compare.js, run-one.sh, run-compare.sh)
 docs/ARCHITECTURE.md               설계 결정과 계획서 대응표
 ```
 
-## 시나리오 (계획서 8장)
+## 측정 기능: 로그인
 
-| 파일 | 시나리오 | 확인 가설 |
+계획서 8장의 시나리오(S1~S5) 중 **S1 로그인**만 측정했다. 이메일로 회원을 찾는 비용이
+A와 F_HMAC의 차이가 가장 직접 드러나는 지점이기 때문이다.
+
+| 단계 | A | F_HMAC |
 |---|---|---|
-| `k6/s1_login.js` | S1 로그인 | H1, H2, H3 |
-| `k6/s2_signup.js` | S2 회원가입 | H4 |
-| `k6/s3_withdraw.js` | S3 회원탈퇴 (가입 후 탈퇴) | H4 |
-| `k6/s4_mixed.js` | S4 혼합 (읽기:쓰기 95:5 / 70:30, `WRITE_RATIO` 환경변수) | H4 |
-| `k6/s5_notfound.js` | S5 존재하지 않는 이메일 조회 | 실패 경로 비용 |
+| 1. 회원 찾기 | 앞에서부터 행을 하나씩 복호화해 입력 이메일과 비교, 일치하면 멈춤 | 입력 이메일의 HMAC 값으로 hash 인덱스 조회 |
+| 2. 비밀번호 확인 | bcrypt 검증 | bcrypt 검증 (+ 찾은 행 1개의 이메일 복호화) |
+
+- 모든 요청은 **존재하는 이메일 + 올바른 비밀번호**로 보내는 성공 로그인이다.
+- 조회할 회원은 `seq <= N`에서 고정 시드로 무작위로 뽑고, A와 F_HMAC이 같은 회원을 같은 순서로 조회한다.
+- k6 VU 1개로 요청을 하나씩 보내고, 워밍업은 별도 k6 실행으로 돌려 통계에서 뺀다.
+
+| 파일 | 역할 |
+|---|---|
+| `k6/login_compare.js` | 로그인 요청 + 지표 수집 (`login_ms`, `decrypt_ms`, `login_success`) |
+| `k6/run-one.sh <a\|f_hmac> <N> [반복]` | 워밍업 → 측정 → 결과 폴더(`results/<시각>_N<N>/`)에 저장 |
+| `k6/run-compare.sh <N> [A 반복] [F 반복]` | A와 F_HMAC을 차례로 측정 |
 
 ## 측정 보조 스크립트
 
