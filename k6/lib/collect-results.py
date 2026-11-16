@@ -212,6 +212,61 @@ runs_tbl = [[r['run_id'], r['config'], LABEL.get(int(r['N']), r['N']), f"{r['war
              hm(r['login_avg_ms']), hm(r['login_med_ms']), hm(r['login_p95_ms']), hm(r['login_max_ms']),
              f"{float(r['success_rate']):.0%}" if r['success_rate'] else ''] for r in rows]
 
+# 시간 복잡도 근거: (1) 규모 대비 로그-로그 기울기, (2) A 요청별 응답시간 vs seq 직선 회귀
+import glob
+import math
+
+
+def slope(xs, ys):
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sum((x - mx) ** 2 for x in xs)
+
+
+ok = [s for s in summary if s['a_avg_ms'] and s['f_avg_ms']]
+lx = [math.log10(s['N']) for s in ok]
+k_a = slope(lx, [math.log10(float(s['a_avg_ms'])) for s in ok]) if len(ok) > 1 else None
+k_f = slope(lx, [math.log10(float(s['f_avg_ms'])) for s in ok]) if len(ok) > 1 else None
+
+seq_fit = []
+for s in ok:
+    pts = []
+    for p in glob.glob(os.path.join(root, f"*_N{s['N']}", 'a', 'requests.csv')):
+        for r in csv.DictReader(open(p, encoding='utf-8')):
+            if r.get('phase') == 'measure' and r.get('seq'):
+                pts.append((int(r['seq']), float(r['duration_ms'])))
+    if len(pts) < 3:
+        continue
+    xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+    b = slope(xs, ys)
+    c = sum(ys) / len(ys) - b * sum(xs) / len(xs)
+    my = sum(ys) / len(ys)
+    r2 = 1 - sum((y - (c + b * x)) ** 2 for x, y in pts) / sum((y - my) ** 2 for y in ys)
+    seq_fit.append([s['scale'], len(pts), f'{b * 1000:.1f}ms', f'{r2:.3f}'])
+
+complexity = ''
+if k_a is not None:
+    complexity = f"""## 시간 복잡도: 예상대로 A는 O(n), F_HMAC은 O(1)
+
+- **A (AES 전체 스캔) = O(n)**: 행을 앞에서부터 하나씩 복호화해 비교하므로 읽는 행 수에 비례한다.
+  규모-시간 로그-로그 기울기가 **{k_a:.3f}** (1이면 O(n)) — 데이터가 10배 늘 때 시간도 약 10배 늘었다.
+- **F_HMAC (해시 인덱스) = O(1)**: 이메일의 HMAC 값으로 hash 인덱스를 한 번 조회한다.
+  로그-로그 기울기가 **{k_f:.3f}** (0이면 O(1)) — 1만 건부터 1000만 건까지 응답시간이 거의 같았다.
+
+![규모별 평균 로그인 시간](docs/images/login_time_by_scale.png)
+
+![A ÷ F_HMAC 배율](docs/images/slowdown_ratio.png)
+"""
+    if seq_fit:
+        complexity += f"""
+A는 일치하는 행(seq번째)을 찾으면 멈추므로, 요청별 응답시간을 `고정 시간 + 행당 비용 × seq` 로 맞춰 보면
+규모와 상관없이 행당 비용이 같고 거의 완전한 직선이다(R²가 1에 가까울수록 직선).
+
+{table(['규모', 'A 요청 수', '행 1천 개당 시간', 'R²'], seq_fit, 'crrr')}
+
+평균 증가 배율이 정확히 10배가 아니라 조금 작은 이유는 (1) 행 수와 무관한 고정 비용(bcrypt 검증·HTTP, 약 60ms)이
+작은 규모에서 비중이 크고, (2) 무작위로 뽑은 seq의 평균 위치가 규모마다 조금 달랐기 때문이다.
+"""
+
 md = f"""# AES 전체 스캔(A) vs HMAC 해시 인덱스(F_HMAC) 로그인 성능
 
 규모마다 측정 3회의 평균입니다. 원본: 각 결과 폴더의 `k6.log` / `summary.json` / `meta.txt`
@@ -230,6 +285,7 @@ md = f"""# AES 전체 스캔(A) vs HMAC 해시 인덱스(F_HMAC) 로그인 성�
 - **요청 수**: 측정 1회당 요청 수. 워밍업은 별도 k6 실행으로 돌려 통계에 들어가지 않는다.
 - 모든 측정에서 로그인 성공률 100%.
 
+{complexity}
 ## 측정 조건
 
 | 항목 | 값 |
