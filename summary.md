@@ -1,6 +1,6 @@
 # AES 전체 스캔(A) vs HMAC 해시 인덱스(F_HMAC) 로그인 성능
 
-규모마다 측정 3회의 평균입니다. 원본: 각 결과 폴더의 `k6.log` / `summary.json` / `meta.txt`
+규모마다 측정 3회의 평균. 원본: 각 결과 폴더의 `k6.log` / `summary.json` / `meta.txt`
 (`python3 k6/lib/collect-results.py` 로 다시 만들 수 있음)
 
 ## 한눈에 보기
