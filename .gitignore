@@ -1,0 +1,22 @@
+.env
+
+# Maven
+target/
+
+# 독립 생성기(generator/) 출력물
+generator/out*/
+
+# 생성기 출력물·적재용 CSV (용량이 커서 git에 올리지 않음 — 계획서 6장)
+data/
+data-sample/
+
+# k6/측정 결과
+results/
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+
+# 로그
+*.log

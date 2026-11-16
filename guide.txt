@@ -1,0 +1,17 @@
+// DB 접속 (docker-compose.yml의 컨테이너/DB 이름 기준)
+docker exec -it ah-bench psql -U bench -d ahbench
+
+// 서버 실행 (기본 프로필 — 벤치마크 API)
+java -jar target/ahbench.jar
+
+// 데이터 생성 (계획서 6장)
+./scripts/generate-data.sh 10000000 1000000 8
+
+// 규모별 적재 + 인덱스 + ANALYZE (계획서 6장, 서버가 먼저 떠 있어야 함)
+./scripts/load-data.sh 10000
+
+// 100건 생성기/서비스 일치 검증 (계획서 6장 "1. 100건으로 생성기를 검증한다")
+./scripts/verify-sample.sh
+
+// k6 부하 테스트 (계획서 8장)
+k6 run --env CONFIG=c k6/s1_login.js

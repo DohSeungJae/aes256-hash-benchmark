@@ -1,0 +1,52 @@
+spring:
+  application:
+    name: ahbench
+
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:ahbench}
+    username: ${DB_USER:bench}
+    password: ${DB_PASSWORD:bench}
+    hikari:
+      # 계획서 5장: 모든 구성에서 동일하게 고정
+      maximum-pool-size: ${HIKARI_MAX_POOL_SIZE:20}
+      minimum-idle: ${HIKARI_MIN_IDLE:10}
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  jackson:
+    default-property-inclusion: non_null
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+
+# ── 벤치마크 전용 설정 ───────────────────────────────────────────────
+bench:
+  encryption:
+    # AES256 암호화 키. 운영/측정 환경에서는 반드시 환경변수로 주입하고 코드/저장소에 넣지 않는다 (계획서 11장).
+    key: ${AES_ENCRYPTION_KEY:dev-only-change-me-aes-key}
+    pool-size: ${AES_POOL_SIZE:20}
+    # 키 유도 알고리즘: sha256(기본, generator/ 독립 생성기도 동일) | sha512(AES256TextEncryptor 데이터용).
+    # 데이터를 만든 쪽과 서버가 반드시 같은 값을 써야 한다 (다르면 복호화 실패).
+    algorithm: ${AES_ALGORITHM:sha256}
+
+  hmac:
+    # HMAC-SHA256용 서버 비밀키. AES 키와 분리된 별도 키를 쓴다 (계획서 11장 "키 관리").
+    key: ${HMAC_SECRET_KEY:dev-only-change-me-hmac-key}
+
+  timing:
+    # true로 켜면 복호화 1회 소요 시간을 INFO 로그로 남긴다 (계획서 9장, H2 측정용).
+    # 대규모 부하 테스트 중에는 로그 폭주를 막기 위해 끄는 것을 권장.
+    log-decrypt: ${LOG_DECRYPT_TIMING:false}
+
+  fullscan:
+    # 구성 A 전체 스캔 시 커서 streaming fetch size
+    fetch-size: ${FULLSCAN_FETCH_SIZE:1000}

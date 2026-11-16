@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16                     # 버전 고정 (측정 환경에서도 동일하게)
+    container_name: ah-bench
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: ${DB_PASSWORD}    # .env 파일에서 주입
+      POSTGRES_DB: ahbench
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data    # named volume (Windows 폴더 bind mount 금지)
+      - ./sql/init:/docker-entrypoint-initdb.d:ro   # 최초 기동 시 DDL 자동 실행
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=${PG_SHARED_BUFFERS:-1GB}"          # 본 측정 2GB (.env)
+      - "-c"
+      - "effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-3GB}"  # 본 측정 3500MB (.env)
+      - "-c"
+      - "work_mem=32MB"
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
+      - "-c"
+      - "track_io_timing=on"
+    shm_size: "${PG_SHM_SIZE:-1g}"         # shared_buffers보다 커야 기동됨 (본 측정 3g)
+    mem_limit: 5g                          # 초과 시 OOM으로 컨테이너 종료. shared_buffers(2GB)에 여유 포함
+    cpus: 3
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d ahbench"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .                               # 루트의 Dockerfile로 jar 빌드 + 실행 이미지 생성
+    image: ahbench-app
+    container_name: ah-bench-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy         # DB가 준비된 뒤에 기동해야 Flyway 마이그레이션이 성공한다
+    environment:
+      DB_HOST: postgres                    # 같은 compose 네트워크의 서비스 이름
+      DB_PORT: 5432
+      DB_NAME: ahbench
+      DB_USER: bench
+      DB_PASSWORD: ${DB_PASSWORD}
+      # 기본값은 application.yml과 동일하게 둔다 — 호스트에서 돌리는 생성기와 키가 어긋나지 않도록 (계획서 11장)
+      AES_ENCRYPTION_KEY: ${AES_ENCRYPTION_KEY:-dev-only-change-me-aes-key}
+      HMAC_SECRET_KEY: ${HMAC_SECRET_KEY:-dev-only-change-me-hmac-key}
+      AES_ALGORITHM: ${AES_ALGORITHM:-sha256}   # sha256(기본, generator/ CSV와 동일) | sha512
+      HIKARI_MAX_POOL_SIZE: ${HIKARI_MAX_POOL_SIZE:-20}
+      HIKARI_MIN_IDLE: ${HIKARI_MIN_IDLE:-10}
+      LOG_DECRYPT_TIMING: ${LOG_DECRYPT_TIMING:-false}
+      JAVA_TOOL_OPTIONS: "-Xms1g -Xmx1g"   # 힙 고정(측정 중 힙 크기 변동 방지). mem_limit보다 작아야 함
+    ports:
+      - "8080:8080"
+    mem_limit: 2g
+    cpus: 3
+    healthcheck:
+      # 런타임 이미지에 curl이 없을 수 있어 bash의 /dev/tcp로 actuator health를 확인한다
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8080 && printf \"GET /actuator/health HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  pgdata:

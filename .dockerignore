@@ -1,0 +1,13 @@
+# 빌드 컨텍스트에는 pom.xml과 src만 필요하다
+target/
+data/
+data-sample/
+results/
+k6/
+scripts/
+docs/
+sql_root_leftover/
+.git/
+.idea/
+.env
+*.log
